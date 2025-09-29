@@ -12,6 +12,7 @@ import pandas as pd
 from io import BytesIO
 from netmiko import ConnectHandler
 from netmiko import exceptions
+from netmiko.ssh_dispatcher import CLASS_MAPPER as SUPPORTED_DEVICES # <--- 新增此行
 
 
 # 自定义异常类，用于处理输入密码为None情况
@@ -123,6 +124,7 @@ def read_unencrypted_file(info_file: str) -> pd.DataFrame:
 
 
 # 巡检
+# 巡检
 def inspection(login_info, cmds_dict):
     # 使用传入的设备登录信息和巡检命令，登录设备依次输入巡检命令，如果设备登录出现异常，生成01log文件记录。
     t11 = time.time()  # 子线程执行计时起始点
@@ -133,41 +135,59 @@ def inspection(login_info, cmds_dict):
         ssh.enable()  # 进入设备Enable模式
     except Exception as ssh_error:  # 登录设备出现异常
         with LOCK:  # 线程锁
-            match type(ssh_error).__name__:  # 匹配异常名称
-                case 'AttributeError':  # 异常名称为：AttributeError
-                    print(f'设备 {login_info["host"]} 缺少设备管理地址！')  # CMD输出提示信息
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} 缺少设备管理地址！\n')  # 记录到log文件
-                case 'NetmikoTimeoutException':
-                    print(f'设备 {login_info["host"]} 管理地址或端口不可达！')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} 管理地址或端口不可达！\n')
-                case 'NetmikoAuthenticationException':
-                    print(f'设备 {login_info["host"]} 用户名或密码认证失败！')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} 用户名或密码认证失败！\n')
-                case 'ValueError':
-                    print(f'设备 {login_info["host"]} Enable密码认证失败！')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} Enable密码认证失败！\n')
-                case 'TimeoutError':
-                    print(f'设备 {login_info["host"]} Telnet连接超时！')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} Telnet连接超时！\n')
-                case 'ReadTimeout':
-                    print(f'设备 {login_info["host"]} Enable密码认证失败！')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} Enable密码认证失败！\n')
-                case 'ConnectionRefusedError':
-                    print(f'设备 {login_info["host"]} 远程登录协议错误！')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} 远程登录协议错误！\n')
-                case _:
-                    print(f'设备 {login_info["host"]} 未知错误！{type(ssh_error).__name__}: {str(ssh_error)}')
-                    with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
-                        log.write(f'设备 {login_info["host"]} 未知错误！{type(ssh_error).__name__}: {str(ssh_error)}\n')
+            exception_name = type(ssh_error).__name__
+
+            if exception_name == 'AttributeError':  # 异常名称为：AttributeError
+                print(f'设备 {login_info["host"]} 缺少设备管理地址！')  # CMD输出提示信息
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} 缺少设备管理地址！\n')  # 记录到log文件
+            elif exception_name == 'NetmikoTimeoutException':
+                print(f'设备 {login_info["host"]} 管理地址或端口不可达！')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} 管理地址或端口不可达！\n')
+            elif exception_name == 'NetmikoAuthenticationException':
+                print(f'设备 {login_info["host"]} 用户名或密码认证失败！')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} 用户名或密码认证失败！\n')
+            elif exception_name == 'ValueError':
+                print(f'设备 {login_info["host"]} Enable密码认证失败！')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} Enable密码认证失败！\n')
+            elif exception_name == 'TimeoutError':
+                print(f'设备 {login_info["host"]} Telnet连接超时！')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} Telnet连接超时！\n')
+            elif exception_name == 'ReadTimeout':
+                print(f'设备 {login_info["host"]} Enable密码认证失败！')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} Enable密码认证失败！\n')
+            elif exception_name == 'ConnectionRefusedError':
+                print(f'设备 {login_info["host"]} 远程登录协议错误！')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} 远程登录协议错误！\n')
+            else:
+                print(f'设备 {login_info["host"]} 未知错误！{type(ssh_error).__name__}: {str(ssh_error)}')
+                with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
+                    log.write(f'设备 {login_info["host"]} 未知错误！{type(ssh_error).__name__}: {str(ssh_error)}\n')
     else:  # 如果登录正常，开始巡检
-        with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w', encoding='utf-8') as device_log_file:
+        # =================================================================================
+        # ==== 新增代码块：处理分页显示 ====
+        # =================================================================================
+        try:
+            # 尝试设置终端长度为0，以避免 --More-- 提示导致输出不完整
+            # expect_string=r'#|$' 用于匹配命令执行后的特权模式提示符，确保命令执行完毕
+            ssh.send_command('terminal length 0', expect_string=r'#|$', read_timeout=10)
+        except Exception:
+            # 如果设备不支持此命令（例如，某些设备使用 screen-length），则会抛出异常
+            # 我们捕获这个异常，并友好地提示，然后继续执行后续巡检
+            with LOCK:
+                print(f"提示：设备 {login_info['host']} 可能不支持 'terminal length 0' 命令，将继续巡检。")
+        # =================================================================================
+        # ==== 新增代码块结束 ====
+        # =================================================================================
+
+        with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w',
+                  encoding='utf-8') as device_log_file:
             # 创建当前设备的巡检信息记录文件
             with LOCK:  # 线程锁
                 print(f'设备 {login_info["host"]} 正在巡检...')  # 打印当前设备正在巡检提示信息
@@ -211,7 +231,21 @@ if __name__ == '__main__':
     for device_info in devices_info:  # 遍历所有设备登录信息
         updated_device_info = device_info.copy()  # 创建一个更新后的设备登录信息字典，用于传参
         updated_device_info["conn_timeout"] = 40  # 更新设备登录信息字典，设置TCP连接超时时间
-        pre_device = threading.Thread(target=inspection, args=(updated_device_info, cmds_info), name=device_info['host'] + '_Thread')
+
+        # =================================================================================
+        # ==== 新增代码块：检查并转换 device_type ====
+        # =================================================================================
+        original_device_type = updated_device_info.get('device_type')
+        if original_device_type not in SUPPORTED_DEVICES:
+            print(
+                f"警告：设备 {updated_device_info.get('host')} 的类型 '{original_device_type}' 不在Netmiko支持列表，将尝试使用 'generic' 类型连接。")
+            updated_device_info['device_type'] = 'generic'
+        # =================================================================================
+        # ==== 新增代码块结束 ====
+        # =================================================================================
+
+        pre_device = threading.Thread(target=inspection, args=(updated_device_info, cmds_info),
+                                      name=device_info['host'] + '_Thread')
         # 创建一个线程，执行inspection函数，传入当前遍历的设备登录信息和所有设备类型巡检命令，并定义线程名称
         threading_list.append(pre_device)  # 将当前创建的线程追加进线程列表
         POOL.acquire()  # 从最大线程限制，获取一个线程令牌
