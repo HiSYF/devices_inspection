@@ -13,7 +13,7 @@ from io import BytesIO
 from netmiko import ConnectHandler
 from netmiko import exceptions
 from netmiko.ssh_dispatcher import CLASS_MAPPER as SUPPORTED_DEVICES # <--- 新增此行
-
+import re
 
 # 自定义异常类，用于处理输入密码为None情况
 class PasswordRequiredError(Exception):
@@ -124,7 +124,6 @@ def read_unencrypted_file(info_file: str) -> pd.DataFrame:
 
 
 # 巡检
-# 巡检
 def inspection(login_info, cmds_dict):
     # 使用传入的设备登录信息和巡检命令，登录设备依次输入巡检命令，如果设备登录出现异常，生成01log文件记录。
     t11 = time.time()  # 子线程执行计时起始点
@@ -170,13 +169,16 @@ def inspection(login_info, cmds_dict):
                 with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
                     log.write(f'设备 {login_info["host"]} 未知错误！{type(ssh_error).__name__}: {str(ssh_error)}\n')
     else:  # 如果登录正常，开始巡检
+        prompt = ssh.find_prompt()
+        expect_pattern = re.escape(prompt)
+
         # =================================================================================
         # ==== 新增代码块：处理分页显示 ====
         # =================================================================================
         try:
             # 尝试设置终端长度为0，以避免 --More-- 提示导致输出不完整
             # expect_string=r'#|$' 用于匹配命令执行后的特权模式提示符，确保命令执行完毕
-            ssh.send_command('terminal length 0', expect_string=r'#|$', read_timeout=10)
+            ssh.send_command('terminal length 0', expect_string=expect_pattern, read_timeout=10)
         except Exception:
             # 如果设备不支持此命令（例如，某些设备使用 screen-length），则会抛出异常
             # 我们捕获这个异常，并友好地提示，然后继续执行后续巡检
@@ -193,11 +195,13 @@ def inspection(login_info, cmds_dict):
                 print(f'设备 {login_info["host"]} 正在巡检...')  # 打印当前设备正在巡检提示信息
             device_log_file.write('=' * 10 + ' ' + 'Local Time' + ' ' + '=' * 10 + '\n\n')  # 写入当前巡检时间
             device_log_file.write(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n\n')  # 写入当前巡检时间
+            ssh.send_command('terminal length 0', expect_string=expect_pattern, read_timeout=10)
             for cmd in cmds_dict[login_info['device_type']]:  # 从所有设备类型巡检命令中找到与当前设备类型匹配的命令列表，遍历所有巡检命令
                 if type(cmd) is str:  # 判断读取的命令是否为字符串
                     device_log_file.write('=' * 10 + ' ' + cmd + ' ' + '=' * 10 + '\n\n')  # 写入当前巡检命令分行符，至巡检信息记录文件
                     try:  # 尝试执行当前巡检命令，获取结果，并设置最长等待时间
-                        show = ssh.send_command(cmd, read_timeout=120)
+
+                        show = ssh.send_command(cmd, read_timeout=20)
                     except exceptions.ReadTimeout:  # 如果等待时间依然超时，捕获异常并提示、记录
                         print(f'设备 {login_info["host"]} 命令 {cmd} 执行超时！')  # cmd输出命令执行超时提示
                         show = f'命令 {cmd} 执行超时！'  # 赋值结果，在巡检记录log文件中提示此命令执行超时
@@ -250,10 +254,8 @@ if __name__ == '__main__':
         threading_list.append(pre_device)  # 将当前创建的线程追加进线程列表
         POOL.acquire()  # 从最大线程限制，获取一个线程令牌
         pre_device.start()  # 开启这个线程
-
     for _ in threading_list:  # 遍历所有创建的线程
         _.join()  # 等待所有线程的结束
-
     try:  # 尝试打开01log文件
         with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'r', encoding='utf-8') as log_file:
             file_lines = len(log_file.readlines())  # 读取01log文件共有多少行。有多少行，代表出现了多少个设备登录异常
