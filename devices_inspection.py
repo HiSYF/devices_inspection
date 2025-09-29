@@ -123,6 +123,36 @@ def read_unencrypted_file(info_file: str) -> pd.DataFrame:
         return devices_dict, cmds_dict
 
 
+def disable_paging(ssh_connection, device_info):
+    """根据设备的原始功能类型，发送相应的命令来禁用分页显示。"""
+    # <--- 关键变更：我们现在基于原始设备类型来选择命令
+    device_type = device_info.get('original_device_type')
+
+    PAGING_COMMANDS = {
+        'cisco_ios': 'terminal length 0',
+        'huawei': 'screen-length 0 temporary',
+        'h3c_comware': 'screen-length disable',
+        'ruijie_os': 'terminal length 0',
+        # 在这里为您自定义的、不受Netmiko支持的设备类型添加命令
+        # 例如: 'my_custom_firewall': 'set cli pagination off',
+    }
+
+    # 尝试从特定命令字典中获取命令，如果找不到，则尝试一个通用命令
+    command = PAGING_COMMANDS.get(device_type) or 'terminal length 0'
+
+    if command:
+        try:
+            # 优先使用 send_config_set
+            ssh_connection.send_config_set([command])
+        except Exception:
+            try:
+                # 备用方案
+                prompt = ssh_connection.find_prompt()
+                ssh_connection.send_command(command, expect_string=re.escape(prompt))
+            except Exception as e:
+                with LOCK:
+                    print(
+                        f"警告：设备 {device_info['host']} (类型: {device_type}) 无法执行禁用分页命令 '{command}'。错误: {e}")
 # 巡检
 def inspection(login_info, cmds_dict):
     # 使用传入的设备登录信息和巡检命令，登录设备依次输入巡检命令，如果设备登录出现异常，生成01log文件记录。
@@ -130,7 +160,14 @@ def inspection(login_info, cmds_dict):
     ssh = None  # 初始化ssh对象
 
     try:  # 尝试登录设备
-        ssh = ConnectHandler(**login_info)  # 使用设备登录信息，SSH登录设备
+        # 1. 复制一份传入的字典，以免影响原始数据
+        netmiko_params = login_info.copy()
+
+        # 2. 从这个副本中移除我们自定义的、Netmiko不认识的键
+        netmiko_params.pop('original_device_type', None)  # .pop(key, None) 可以安全移除，即使键不存在也不会报错
+
+        # 3. 将这个“干净”的字典传递给 ConnectHandler
+        ssh = ConnectHandler(**netmiko_params)
         ssh.enable()  # 进入设备Enable模式
     except Exception as ssh_error:  # 登录设备出现异常
         with LOCK:  # 线程锁
@@ -169,45 +206,39 @@ def inspection(login_info, cmds_dict):
                 with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'a', encoding='utf-8') as log:
                     log.write(f'设备 {login_info["host"]} 未知错误！{type(ssh_error).__name__}: {str(ssh_error)}\n')
     else:  # 如果登录正常，开始巡检
-        prompt = ssh.find_prompt()
-        expect_pattern = re.escape(prompt)
+        # 1. 禁用分页 (基于原始类型)
+        disable_paging(ssh, login_info)
 
-        # =================================================================================
-        # ==== 新增代码块：处理分页显示 ====
-        # =================================================================================
-        try:
-            # 尝试设置终端长度为0，以避免 --More-- 提示导致输出不完整
-            # expect_string=r'#|$' 用于匹配命令执行后的特权模式提示符，确保命令执行完毕
-            ssh.send_command('terminal length 0', expect_string=expect_pattern, read_timeout=10)
-        except Exception:
-            # 如果设备不支持此命令（例如，某些设备使用 screen-length），则会抛出异常
-            # 我们捕获这个异常，并友好地提示，然后继续执行后续巡检
+        # 2. <--- 关键变更：使用 'original_device_type' 从Excel数据中查找命令列表
+        device_type_for_cmds = login_info.get('original_device_type')
+
+        # 3. 检查 cmds_dict 中是否存在该原始类型的命令列表
+        if not device_type_for_cmds or device_type_for_cmds not in cmds_dict:
             with LOCK:
-                print(f"提示：设备 {login_info['host']} 可能不支持 'terminal length 0' 命令，将继续巡检。")
-        # =================================================================================
-        # ==== 新增代码块结束 ====
-        # =================================================================================
+                print(
+                    f"错误：设备 {login_info['host']} (原始类型: {device_type_for_cmds}) - 在 info.xlsx 的命令表中找不到对应的命令列。")
+            with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w', encoding='utf-8') as f:
+                f.write(f"错误：找不到原始设备类型 '{device_type_for_cmds}' 对应的巡检命令。\n")
+        else:
+            with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w',
+                      encoding='utf-8') as device_log_file:
+                with LOCK:
+                    print(f'设备 {login_info["host"]} 正在巡检...')
+                device_log_file.write('=' * 10 + ' ' + 'Local Time' + ' ' + '=' * 10 + '\n\n')
+                device_log_file.write(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n\n')
 
-        with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w',
-                  encoding='utf-8') as device_log_file:
-            # 创建当前设备的巡检信息记录文件
-            with LOCK:  # 线程锁
-                print(f'设备 {login_info["host"]} 正在巡检...')  # 打印当前设备正在巡检提示信息
-            device_log_file.write('=' * 10 + ' ' + 'Local Time' + ' ' + '=' * 10 + '\n\n')  # 写入当前巡检时间
-            device_log_file.write(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n\n')  # 写入当前巡检时间
-            ssh.send_command('terminal length 0', expect_string=expect_pattern, read_timeout=10)
-            for cmd in cmds_dict[login_info['device_type']]:  # 从所有设备类型巡检命令中找到与当前设备类型匹配的命令列表，遍历所有巡检命令
-                if type(cmd) is str:  # 判断读取的命令是否为字符串
-                    device_log_file.write('=' * 10 + ' ' + cmd + ' ' + '=' * 10 + '\n\n')  # 写入当前巡检命令分行符，至巡检信息记录文件
-                    try:  # 尝试执行当前巡检命令，获取结果，并设置最长等待时间
+                for cmd in cmds_dict[device_type_for_cmds]:
+                    if isinstance(cmd, str) and cmd:
+                        device_log_file.write('=' * 10 + ' ' + cmd + ' ' + '=' * 10 + '\n\n')
+                        try:
+                            show = ssh.send_command(cmd, read_timeout=120)
+                        except exceptions.ReadTimeout:
+                            print(f'设备 {login_info["host"]} 命令 "{cmd}" 执行超时！')
+                            show = f'命令 "{cmd}" 执行超时！'
+                        finally:
+                            device_log_file.write(show + '\n\n')
 
-                        show = ssh.send_command(cmd, read_timeout=20)
-                    except exceptions.ReadTimeout:  # 如果等待时间依然超时，捕获异常并提示、记录
-                        print(f'设备 {login_info["host"]} 命令 {cmd} 执行超时！')  # cmd输出命令执行超时提示
-                        show = f'命令 {cmd} 执行超时！'  # 赋值结果，在巡检记录log文件中提示此命令执行超时
-                    finally:  # 最终将结果写入巡检信息记录文件
-                        device_log_file.write(show + '\n\n')  # 写入当前巡检命令的结果，至巡检信息记录文件
-        t12 = time.time()  # 子线程执行计时结束点
+        t12 = time.time()
         with LOCK:  # 线程锁
             print(f'设备 {login_info["host"]} 巡检完成，用时 {round(t12 - t11, 1)} 秒。')  # 打印子线程执行时长
     finally:  # 最后结束SSH连接释放线程
@@ -217,45 +248,48 @@ def inspection(login_info, cmds_dict):
 
 
 if __name__ == '__main__':
-    t1 = time.time()  # 程序执行计时起始点
-    threading_list = []  # 创建一个线程列表，准备存放所有线程
-    devices_info, cmds_info = read_info()  # 读取info文件，获取设备登录信息和命令信息
+    t1 = time.time()
+    threading_list = []
+    devices_info, cmds_info = read_info()
 
-    print(f'\n巡检开始...')  # 提示巡检开始
-    print(f'\n' + '>' * 40 + '\n')  # 打印一行“>”，隔开巡检提示信息
+    print(f'\n巡检开始...')
+    print(f'\n' + '>' * 40 + '\n')
 
-    if not os.path.exists(LOCAL_TIME):  # 判断是否存在当前日期的文件夹，判断当天是否执行过巡检
-        os.makedirs(LOCAL_TIME)  # 如果没有，创建当天日期文件夹
-    else:  # 如果有
-        try:  # 尝试删除记录巡检设备异常的文件，即01log文件
-            os.remove(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'))  # 删除01log文件
-        except FileNotFoundError:  # 如果没有01log文件，表示之前执行巡检没有发生异常
-            pass  # 跳过，不做处理
+    if not os.path.exists(LOCAL_TIME):
+        os.makedirs(LOCAL_TIME)
+    else:
+        try:
+            os.remove(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'))
+        except FileNotFoundError:
+            pass
 
-    for device_info in devices_info:  # 遍历所有设备登录信息
-        updated_device_info = device_info.copy()  # 创建一个更新后的设备登录信息字典，用于传参
-        updated_device_info["conn_timeout"] = 40  # 更新设备登录信息字典，设置TCP连接超时时间
+    for device_info in devices_info:
+        updated_device_info = device_info.copy()
+        updated_device_info["conn_timeout"] = 40
 
         # =================================================================================
-        # ==== 新增代码块：检查并转换 device_type ====
+        # ==== 关键逻辑变更：同时保存原始类型和连接类型 ====
         # =================================================================================
         original_device_type = updated_device_info.get('device_type')
+
+        # 1. 无论如何，都将原始类型保存下来，用于后续的命令查找
+        updated_device_info['original_device_type'] = original_device_type
+
+        # 2. 仅当连接需要时，才修改 'device_type' 的值
         if original_device_type not in SUPPORTED_DEVICES:
             print(
-                f"警告：设备 {updated_device_info.get('host')} 的类型 '{original_device_type}' 不在Netmiko支持列表，将尝试使用 'generic' 类型连接。")
+                f"警告：设备 {updated_device_info.get('host')} 的类型 '{original_device_type}' 不在Netmiko支持列表，将使用 'generic' 类型进行连接。")
             updated_device_info['device_type'] = 'generic'
-        # =================================================================================
-        # ==== 新增代码块结束 ====
         # =================================================================================
 
         pre_device = threading.Thread(target=inspection, args=(updated_device_info, cmds_info),
                                       name=device_info['host'] + '_Thread')
-        # 创建一个线程，执行inspection函数，传入当前遍历的设备登录信息和所有设备类型巡检命令，并定义线程名称
-        threading_list.append(pre_device)  # 将当前创建的线程追加进线程列表
-        POOL.acquire()  # 从最大线程限制，获取一个线程令牌
-        pre_device.start()  # 开启这个线程
-    for _ in threading_list:  # 遍历所有创建的线程
-        _.join()  # 等待所有线程的结束
+        threading_list.append(pre_device)
+        POOL.acquire()
+        pre_device.start()
+
+    for _ in threading_list:
+        _.join()
     try:  # 尝试打开01log文件
         with open(os.path.join(os.getcwd(), LOCAL_TIME, '01log.log'), 'r', encoding='utf-8') as log_file:
             file_lines = len(log_file.readlines())  # 读取01log文件共有多少行。有多少行，代表出现了多少个设备登录异常
