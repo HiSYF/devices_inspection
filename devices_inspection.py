@@ -165,6 +165,7 @@ def inspection(login_info, cmds_dict):
 
         # 2. 从这个副本中移除我们自定义的、Netmiko不认识的键
         netmiko_params.pop('original_device_type', None)  # .pop(key, None) 可以安全移除，即使键不存在也不会报错
+        netmiko_params.pop('file_extension', None)  # <-- 也移除自定义的后缀名键
 
         # 3. 将这个“干净”的字典传递给 ConnectHandler
         ssh = ConnectHandler(**netmiko_params)
@@ -212,15 +213,28 @@ def inspection(login_info, cmds_dict):
         # 2. <--- 关键变更：使用 'original_device_type' 从Excel数据中查找命令列表
         device_type_for_cmds = login_info.get('original_device_type')
 
+        file_ext = login_info.get('file_extension')
+        if not file_ext or not file_ext.strip():
+            file_ext = '.log'
+
+        # 2. 确保后缀名以 '.' 开头
+        file_ext = file_ext.strip()
+        if not file_ext.startswith('.'):
+            file_ext = '.' + file_ext
+
+        # 3. 构建最终的文件名 (格式: hostname-devicetype.extension)
+        device_type_str = login_info.get('original_device_type', 'unknown_type')
+        output_filename = os.path.join(os.getcwd(), LOCAL_TIME, f"{login_info['host']}-{device_type_str}{file_ext}")
+
         # 3. 检查 cmds_dict 中是否存在该原始类型的命令列表
         if not device_type_for_cmds or device_type_for_cmds not in cmds_dict:
             with LOCK:
                 print(
                     f"错误：设备 {login_info['host']} (原始类型: {device_type_for_cmds}) - 在 info.xlsx 的命令表中找不到对应的命令列。")
-            with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w', encoding='utf-8') as f:
+            with open(output_filename, 'w', encoding='utf-8') as f:
                 f.write(f"错误：找不到原始设备类型 '{device_type_for_cmds}' 对应的巡检命令。\n")
         else:
-            with open(os.path.join(os.getcwd(), LOCAL_TIME, login_info['host'] + '.log'), 'w',
+            with open(output_filename, 'w',
                       encoding='utf-8') as device_log_file:
                 with LOCK:
                     print(f'设备 {login_info["host"]} 正在巡检...')
