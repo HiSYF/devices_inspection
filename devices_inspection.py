@@ -223,8 +223,7 @@ def inspection(login_info, cmds_dict):
             file_ext = '.' + file_ext
 
         # 3. 构建最终的文件名 (格式: hostname-devicetype.extension)
-        device_type_str = login_info.get('original_device_type', 'unknown_type')
-        output_filename = os.path.join(os.getcwd(), LOCAL_TIME, f"{login_info['host']}-{device_type_str}{file_ext}")
+        output_filename = os.path.join(os.getcwd(), LOCAL_TIME, f"{login_info['host']}{file_ext}")
 
         # 3. 检查 cmds_dict 中是否存在该原始类型的命令列表
         if not device_type_for_cmds or device_type_for_cmds not in cmds_dict:
